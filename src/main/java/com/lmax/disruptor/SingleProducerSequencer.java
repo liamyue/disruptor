@@ -122,26 +122,34 @@ public final class SingleProducerSequencer extends SingleProducerSequencerFields
         }
 
         long nextValue = this.nextValue;
-
+        // 默认n = 1申请1个可用槽位
+        // nextValue + n就代表了期望申请n个可用槽位序号
         long nextSequence = nextValue + n;
+        //减掉RingBuffer的bufferSize值，用于判断 绕圈覆盖
         long wrapPoint = nextSequence - bufferSize;
+        //cachedValue 最慢消费者消费到的槽位序号
         long cachedGatingSequence = this.cachedValue;
-
+        // 防止消费者将还没消费的消息事件覆盖
+        //1.如果申请槽位序号-bufferSize比最慢消费者序号还大，代表生产者绕了一圈后又追赶上了消费者  生产快引起的覆盖校验
+        //2.比cachedValue（cachedGatingSequence）并非精准的最慢消费者消费槽位 同样存在覆盖风险   消费方慢引起的覆盖校验
         if (wrapPoint > cachedGatingSequence || cachedGatingSequence > nextValue)
         {
+            //cursor代表当前已经生产完成的序号 内存屏障 JMM
             cursor.setVolatile(nextValue);  // StoreLoad fence
-
+            //Util.getMinimumSequence(gatingSequences, nextValue)获取当前时刻所有消费线程中，消费最慢的序号
+            //比cachedValue（cachedGatingSequence）更准确  但更耗费CPU资源 在wrapPoint > cachedGatingSequence判断出生产槽位与消费槽位存在明显差距 即可跳过此处精准校验
             long minSequence;
             while (wrapPoint > (minSequence = Util.getMinimumSequence(gatingSequences, nextValue)))
             {
                 LockSupport.parkNanos(1L); // TODO: Use waitStrategy to spin?
             }
-
+            //缓存最慢消费者消费到的槽位序号
             this.cachedValue = minSequence;
         }
 
+        //申请成功，将nextValue重新设置，下次再申请时继续在该值基础上申请
         this.nextValue = nextSequence;
-
+        //返回申请到的可用序号
         return nextSequence;
     }
 
